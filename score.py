@@ -5,6 +5,12 @@ import dtale
 
 from numpy import nan
 
+import os
+
+folder_name = "ranking_test_5"
+
+if not os.path.exists(folder_name):
+    os.makedirs(folder_name)
 
 # %%
 df_fights = pd.read_csv("fights.csv", sep=";")
@@ -21,21 +27,33 @@ def fight_peremption_coeff(event_date, today):
     # Si le combat a moins de 6 mois, alors coefficient = 1
     if (today - event_date).days // 7 < 52 / 2:
         return 1
+    
+    # Si le combat a moins de 1 an, alors coefficient = 0.95
+    elif (today - event_date).days // 7 < 52:
+        return 0.95
+    
+    # Si le combat a moins de 15 mois, alors coefficient = 0.9
+    elif (today - event_date).days // 7 < 52 * 1.25:
+        return 0.9
+    
+    # Si le combat a moins de 18 mois, alors coefficient = 0.85
+    elif (today - event_date).days // 7 < 52 * 1.5:
+        return 0.85
 
-    # Si le combat a plus de 4 ans, alors coefficient = 0
-    elif (today - event_date).days // 7 > 52 * 4:
+    # Si le combat a plus de 3 ans, alors coefficient = 0
+    elif (today - event_date).days // 7 > 52 * 3:
         return 0
 
     # Si le combat a plus de 6 mois, alors le coefficient diminue de 0.00035 par jour
     else:
-        # On a 182 semaines où on passe de 1 à 0, donc 1/182 = 0.0055
-        return 1 - ((((today - event_date).days // 7) - 26) * 0.0055)
+        # On a 130 semaines où on passe de 0.85 à 0, donc 0.8 / 130 ~= 0.006
+        return 0.8 - ((((today - event_date).days // 7) - 52*1.5) * 0.01)
 
 
 win_type_scores = {
     "KO/TKO": 5,
     "submission": 5,
-    "unanimousDecision": 3,
+    "unanimousDecision": 4,
     "majorityDecision": 2,
     "splitDecision": 1,
     "disqualification": 1,
@@ -44,18 +62,14 @@ win_type_scores = {
 df_fights["win_type_scores"] = df_fights["method"].map(win_type_scores)
 
 # A title shot is worth 3 times more points
-df_fights["belt_score"] = (df_fights["belt"] * 2) + 1
+df_fights["belt_score"] = (df_fights["belt"] * 1) + 1
 
 # A performance of the night is worth 1.5 times more points
 df_fights["performance_of_the_night_score"] = (
     df_fights["performanceOfTheNight"] * 0.5
 ) + 1
 
-df_fights["base_score"] = (
-    df_fights["win_type_scores"]
-    * df_fights["belt_score"]
-    * df_fights["performance_of_the_night_score"]
-)
+opponent_bonus_coeff = 0.5
 
 # %%
 df_fights["opponent_bonus"] = nan
@@ -81,14 +95,18 @@ for i, fight in tqdm(
         )
         loser_score = loser_wins["score_perempted"].sum()
 
-    opponent_bonus = loser_score / 2
+    opponent_bonus = loser_score * opponent_bonus_coeff
 
     df_fights.loc[i, "opponent_bonus"] = opponent_bonus
 
-    df_fights.loc[i, "score"] = fight["base_score"] + opponent_bonus
+    df_fights.loc[i, "score"] = (
+       fight["win_type_scores"]
+         + opponent_bonus
+    ) * fight["belt_score"]
 
 
 # dtale.show(df_fights[['eventDate', 'winnerFirstName', 'winnerLastName', 'loserFirstName', 'loserLastName', 'base_score', 'opponent_bonus', 'score']])
+
 
 # %%
 df_score = df_fights.copy()
@@ -97,7 +115,7 @@ df_score["peremption_coeff"] = df_score["eventDate"].map(
     lambda event_date: fight_peremption_coeff(event_date, pd.Timestamp.today())
 )
 
-df_score["score_perempted"] = df_score["score"] * df_score["peremption_coeff"]
+df_score["score_perempted"] = (df_score["win_type_scores"] +  df_score["opponent_bonus"]) * df_score["belt_score"] * df_score["peremption_coeff"]
 
 df_ranking = (
     df_score.groupby(["winnerHref", "winnerFirstName", "winnerLastName"])
@@ -106,7 +124,7 @@ df_ranking = (
     .reset_index()
 )
 
-df_ranking["rank_score"] = df_ranking.index + 1
+df_ranking["ranking"] = df_ranking.index + 1
 
 df_ranking.rename(
     columns={
@@ -121,13 +139,18 @@ df_ranking.rename(
 df_ranking["rank_score"] = df_ranking["rank_score"].round(2)
 
 df_ranking[["href", "firstName", "lastName", "rank_score"]].to_csv(
-    "ranking/rank_P4P.csv", sep=";", index=False
+    f"{folder_name}/rank_P4P.csv", sep=";", index=False
 )
 
-# dtale.show(df_ranking[['winnerHref', 'winnerFirstName', 'winnerLastName', 'score_perempted']])
+
+# dtale.show(df_score)
+
+
 # %%
 for weight_class in df_score["weightClass"].unique():
     df_weight_class = df_score[df_score["weightClass"] == weight_class].copy()
+
+    df_weight_class.to_csv(f"{folder_name}/fights_" + weight_class + ".csv", sep=";", index=False)
 
     df_weight_class_ranking = (
         df_weight_class.groupby(["winnerHref", "winnerFirstName", "winnerLastName"])
@@ -160,5 +183,7 @@ for weight_class in df_score["weightClass"].unique():
             "rank_score_" + weight_class,
             "rank_" + weight_class,
         ]
-    ].to_csv("ranking/rank_" + weight_class + ".csv", sep=";", index=False)
+    ].to_csv(f"{folder_name}/rank_" + weight_class + ".csv", sep=";", index=False)
+
+
 # %%
